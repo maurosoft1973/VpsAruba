@@ -1,0 +1,105 @@
+---
+- name: Validate inputs
+  ansible.builtin.assert:
+    that:
+      - domain is match('^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$')
+      - acme_email is match('^[^@\s]+@[^@\s]+\.[^@\s]+$')
+      - dns_provider is match('^[a-z0-9]+$')
+      - dns_env | length > 0
+    fail_msg: >-
+      domain, acme_email, dns_provider e le credenziali del provider DNS (dns_env)
+      sono obbligatori e devono avere un formato valido.
+    quiet: true
+
+- name: Create Traefik directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ traefik_dir }}"
+    - "{{ traefik_dir }}/dynamic"
+
+- name: Create certificate storage directory
+  ansible.builtin.file:
+    path: "{{ traefik_dir }}/letsencrypt"
+    state: directory
+    mode: "0700"
+
+# Traefik rifiuta acme.json se i permessi non sono 0600
+- name: Create acme.json with strict permissions
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ traefik_dir }}/letsencrypt/acme.json"
+    force: false
+    mode: "0600"
+
+- name: Write DNS provider credentials
+  ansible.builtin.copy:
+    content: "{{ dns_env | trim }}\n"
+    dest: "{{ traefik_dir }}/dns.env"
+    mode: "0600"
+    owner: root
+    group: root
+  no_log: true
+  notify: Restart traefik
+
+- name: Write Traefik static configuration
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: "{{ traefik_dir }}/traefik.yml"
+    mode: "0644"
+  notify: Restart traefik
+
+- name: Install systemd unit
+  ansible.builtin.template:
+    src: traefik.service.j2
+    dest: /etc/systemd/system/traefik.service
+    mode: "0644"
+  notify: Restart traefik
+
+- name: Pull Traefik image
+  ansible.builtin.command: "podman pull {{ traefik_image }}"
+  register: traefik_pull
+  changed_when: "'Copying blob' in traefik_pull.stderr or 'Writing manifest' in traefik_pull.stderr"
+  retries: 3
+  delay: 5
+  until: traefik_pull.rc == 0
+
+- name: Enable and start Traefik
+  ansible.builtin.systemd:
+    name: traefik
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending restart now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the wildcard certificate to be issued
+  block:
+    - name: Check acme.json for a certificate
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          grep -q '"certificate": *"[A-Za-z0-9+/=]\{20,\}' {{ traefik_dir }}/letsencrypt/acme.json
+        executable: /bin/bash
+      register: traefik_cert
+      changed_when: false
+      retries: "{{ traefik_cert_wait_retries }}"
+      delay: "{{ traefik_cert_wait_delay }}"
+      until: traefik_cert.rc == 0
+  rescue:
+    - name: Collect Traefik logs
+      ansible.builtin.command: podman logs --tail 60 traefik
+      register: traefik_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with ACME diagnostics
+      ansible.builtin.fail:
+        msg: |-
+          Certificato wildcard non emesso entro il timeout. Controlla le credenziali DNS e il provider.
+          Ultime righe del log di Traefik:
+          {{ traefik_logs.stdout_lines | default([]) | join('\n') }}
+          {{ traefik_logs.stderr_lines | default([]) | join('\n') }}

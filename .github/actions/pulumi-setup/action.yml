@@ -1,0 +1,43 @@
+name: Pulumi setup
+description: Installa Pulumi, genera l'SDK del provider Aruba Cloud e seleziona lo stack.
+inputs:
+  stack:
+    description: Nome dello stack Pulumi
+    required: true
+  provider-version:
+    description: Versione del provider Terraform arubacloud/arubacloud (minimo 0.3.0)
+    required: false
+    default: "0.3.0"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - uses: pulumi/setup-pulumi@v2
+      with:
+        pulumi-version: "~3.147"
+
+    # Non esiste un provider Pulumi nativo per Aruba: si usa il provider Terraform
+    # ufficiale tramite il bridge "Any Terraform Provider". Il comando genera
+    # l'SDK Python (pulumi_arubacloud) in infra/sdks/ e aggiorna Pulumi.yaml.
+    - name: Generate Aruba Cloud SDK
+      shell: bash
+      working-directory: infra
+      env:
+        PROVIDER_VERSION: ${{ inputs.provider-version }}
+      run: |
+        pulumi package add terraform-provider arubacloud/arubacloud "$PROVIDER_VERSION"
+        pulumi install
+        if ! venv/bin/python -c 'import pulumi_arubacloud' 2>/dev/null; then
+          venv/bin/pip install ./sdks/arubacloud
+        fi
+        venv/bin/python -c 'import pulumi_arubacloud'
+
+    - name: Select stack
+      shell: bash
+      working-directory: infra
+      env:
+        STACK: ${{ inputs.stack }}
+      run: pulumi stack select --create "$STACK"

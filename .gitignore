@@ -1,0 +1,12 @@
+# Pulumi / Python
+infra/venv/
+infra/sdks/
+infra/.pulumi/
+__pycache__/
+*.pyc
+# Ansible
+*.retry
+.ansible/
+# Secrets
+*.pem
+extra-vars.json

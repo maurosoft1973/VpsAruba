@@ -1,0 +1,30 @@
+---
+- name: Install Podman
+  ansible.builtin.apt:
+    name: "{{ podman_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install passt when available (rootless networking on newer releases)
+  ansible.builtin.apt:
+    name: passt
+    state: present
+  failed_when: false
+
+- name: Enable the Podman API socket (used by Traefik for container discovery)
+  ansible.builtin.systemd:
+    name: podman.socket
+    enabled: true
+    state: started
+
+- name: Check shared network
+  ansible.builtin.command: "podman network exists {{ podman_network }}"
+  register: podman_network_check
+  changed_when: false
+  failed_when: false
+
+- name: Create shared network
+  ansible.builtin.command: "podman network create {{ podman_network }}"
+  when: podman_network_check.rc != 0
+  changed_when: true

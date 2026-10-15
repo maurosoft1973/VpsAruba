@@ -1,0 +1,18 @@
+---
+traefik_image: docker.io/library/traefik:v3.2
+traefik_dir: /opt/traefik
+traefik_network: traefik
+traefik_log_level: INFO
+
+# Valorizzate dal workflow
+domain: ""
+acme_email: ""
+dns_provider: cloudflare
+dns_env: ""
+acme_staging: false
+
+traefik_acme_resolvers:
+  - 1.1.1.1:53
+  - 8.8.8.8:53
+traefik_cert_wait_retries: 30
+traefik_cert_wait_delay: 10

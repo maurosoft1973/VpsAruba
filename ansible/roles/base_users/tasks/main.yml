@@ -1,0 +1,70 @@
+---
+- name: Validate admin users
+  ansible.builtin.assert:
+    that:
+      - admin_users | length == 2
+      - admin_users | map(attribute='name') | unique | length == 2
+      - item.name is match(base_users_name_regex)
+      - item.name not in ['root']
+      - item.ssh_public_key is match('^(ssh-|ecdsa-|sk-)')
+    fail_msg: >-
+      Servono esattamente 2 utenti distinti con nome valido (minuscole, cifre, _ e -)
+      e una chiave pubblica SSH.
+    quiet: true
+  loop: "{{ admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    create_home: true
+  loop: "{{ admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install SSH public keys
+  ansible.posix.authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.ssh_public_key }}"
+    state: present
+  loop: "{{ admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Allow passwordless sudo (login is key-only, no password is set)
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ item.name }}"
+    content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    owner: root
+    group: root
+    validate: /usr/sbin/visudo -cf %s
+  loop: "{{ admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Enable lingering so rootless containers survive logout
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ item.name }}"
+    creates: "/var/lib/systemd/linger/{{ item.name }}"
+  loop: "{{ admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Harden sshd (key-only, no root login)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+    mode: "0644"
+    owner: root
+    group: root
+    validate: /usr/sbin/sshd -t -f %s
+  when: base_users_ssh_harden
+  notify: Reload sshd

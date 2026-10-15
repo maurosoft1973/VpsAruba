@@ -1,0 +1,4 @@
+---
+admin_users: []
+base_users_ssh_harden: true
+base_users_name_regex: '^[a-z_][a-z0-9_-]{0,31}$'

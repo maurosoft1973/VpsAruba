@@ -1,0 +1,15 @@
+---
+# Variabili attese (passate con -e @extra-vars.json dal workflow):
+#   admin_users:  lista di 2 elementi {name, ssh_public_key}
+#   domain:       dominio base, es. example.com (wildcard: *.example.com)
+#   acme_email:   email per Let's Encrypt
+#   dns_provider: provider lego per la DNS-01 challenge, es. cloudflare
+#   dns_env:      stringa multilinea KEY=VALUE con le credenziali del provider DNS
+#   acme_staging: true per usare la CA di staging di Let's Encrypt
+- name: Configurazione VPS
+  hosts: all
+  become: true
+  roles:
+    - base_users
+    - podman
+    - traefik

@@ -1,0 +1,10 @@
+name: vpsaruba
+description: VPS su Aruba Cloud (Cloud Server + rete + firewall + Elastic IP)
+runtime:
+  name: python
+  options:
+    toolchain: pip
+    virtualenv: venv
+# Il blocco "packages" (provider Terraform arubacloud/arubacloud) viene aggiunto
+# in CI da `pulumi package add terraform-provider ...`, vedi
+# .github/actions/pulumi-setup/action.yml

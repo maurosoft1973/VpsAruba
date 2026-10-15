@@ -1,0 +1,6 @@
+---
+podman_packages:
+  - podman
+  - uidmap
+  - slirp4netns
+podman_network: traefik

@@ -1,0 +1,51 @@
+# {{ ansible_managed }}
+log:
+  level: {{ traefik_log_level }}
+
+api:
+  dashboard: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+        # Certificato wildcard richiesto/rinnovato in automatico da Traefik
+        domains:
+          - main: "{{ domain }}"
+            sans:
+              - "*.{{ domain }}"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "{{ acme_email }}"
+      storage: /letsencrypt/acme.json
+{% if acme_staging | bool %}
+      caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+{% endif %}
+      dnsChallenge:
+        provider: "{{ dns_provider }}"
+        resolvers:
+{% for r in traefik_acme_resolvers %}
+          - "{{ r }}"
+{% endfor %}
+
+providers:
+  # Container Podman "rootful" sul network condiviso (via podman.socket)
+  docker:
+    endpoint: unix:///var/run/docker.sock
+    exposedByDefault: false
+    network: {{ traefik_network }}
+  # Rotte statiche, utili ad esempio per i container rootless degli utenti
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true

@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Traefik reverse proxy (Podman)
+Wants=network-online.target
+After=network-online.target podman.socket
+Requires=podman.socket
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+ExecStartPre=-/usr/bin/podman rm -f traefik
+ExecStart=/usr/bin/podman run --rm --name traefik \
+  --network {{ traefik_network }} \
+  --security-opt label=disable \
+  -p 80:80 -p 443:443 \
+  --env-file {{ traefik_dir }}/dns.env \
+  -v {{ traefik_dir }}/traefik.yml:/etc/traefik/traefik.yml:ro \
+  -v {{ traefik_dir }}/dynamic:/etc/traefik/dynamic:ro \
+  -v {{ traefik_dir }}/letsencrypt:/letsencrypt \
+  -v /run/podman/podman.sock:/var/run/docker.sock:ro \
+  {{ traefik_image }}
+ExecStop=/usr/bin/podman stop -t 10 traefik
+
+[Install]
+WantedBy=multi-user.target

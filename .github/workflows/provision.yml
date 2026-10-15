@@ -1,0 +1,233 @@
+name: Provision VPS Aruba
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: Dominio base per il certificato wildcard (es. example.com)
+        required: true
+        type: string
+      acme_email:
+        description: Email per Let's Encrypt
+        required: true
+        type: string
+      dns_provider:
+        description: Provider DNS (codice lego, es. cloudflare, route53, ovh, digitalocean) per la DNS-01 challenge
+        required: true
+        default: cloudflare
+        type: string
+      user1_name:
+        description: Utente 1 - nome
+        required: true
+        type: string
+      user1_ssh_key:
+        description: Utente 1 - chiave pubblica SSH
+        required: true
+        type: string
+      user2_name:
+        description: Utente 2 - nome
+        required: true
+        type: string
+      user2_ssh_key:
+        description: Utente 2 - chiave pubblica SSH
+        required: true
+        type: string
+      acme_staging:
+        description: Usa la CA di staging di Let's Encrypt (consigliato al primo giro, il certificato NON è valido)
+        required: true
+        default: false
+        type: boolean
+      ssh_allowed_cidr:
+        description: CIDR autorizzato alla porta 22 sul firewall Aruba. Il runner GitHub ha IP variabile, quindi 0.0.0.0/0 serve per questo workflow
+        required: true
+        default: 0.0.0.0/0
+        type: string
+      stack:
+        description: Nome stack Pulumi
+        required: true
+        default: prod
+        type: string
+      location:
+        description: Location Aruba
+        required: true
+        default: ITBG-Bergamo
+        type: string
+      zone:
+        description: Zona Aruba
+        required: true
+        default: ITBG-1
+        type: string
+      flavor:
+        description: Flavor del Cloud Server (es. CSO2A4, CSO4A8)
+        required: true
+        default: CSO4A8
+        type: string
+      image:
+        description: ID immagine di boot (Ubuntu/Debian, vedi metadata API Aruba)
+        required: true
+        default: LU22-001
+        type: string
+      disk_size_gb:
+        description: Dimensione disco di boot in GB
+        required: true
+        default: "50"
+        type: string
+      bootstrap_user:
+        description: Utente SSH iniziale dell'immagine (ubuntu per Ubuntu/Debian)
+        required: true
+        default: ubuntu
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-${{ inputs.stack }}
+  cancel-in-progress: false
+
+env:
+  PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+  ARUBACLOUD_CLIENT_ID: ${{ secrets.ARUBACLOUD_CLIENT_ID }}
+  ARUBACLOUD_CLIENT_SECRET: ${{ secrets.ARUBACLOUD_CLIENT_SECRET }}
+
+jobs:
+  provision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          USER1: ${{ inputs.user1_name }}
+          USER2: ${{ inputs.user2_name }}
+          STACK: ${{ inputs.stack }}
+          DISK: ${{ inputs.disk_size_gb }}
+          DNS_PROVIDER: ${{ inputs.dns_provider }}
+          CIDR: ${{ inputs.ssh_allowed_cidr }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DNS_PROVIDER_ENV: ${{ secrets.DNS_PROVIDER_ENV }}
+        run: |
+          set -euo pipefail
+          re() { [[ "$2" =~ $1 ]] || { echo "::error::Valore non valido: $3"; exit 1; }; }
+          re '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$' "$DOMAIN" domain
+          re '^[a-z_][a-z0-9_-]{0,31}$' "$USER1" user1_name
+          re '^[a-z_][a-z0-9_-]{0,31}$' "$USER2" user2_name
+          re '^[A-Za-z0-9._-]{1,40}$' "$STACK" stack
+          re '^[0-9]{2,4}$' "$DISK" disk_size_gb
+          re '^[a-z0-9]+$' "$DNS_PROVIDER" dns_provider
+          re '^[0-9./:a-fA-F]+$' "$CIDR" ssh_allowed_cidr
+          [[ "$USER1" != "$USER2" ]] || { echo "::error::I due utenti devono essere diversi"; exit 1; }
+          for s in PULUMI_ACCESS_TOKEN ARUBACLOUD_CLIENT_ID ARUBACLOUD_CLIENT_SECRET DEPLOY_SSH_PRIVATE_KEY DNS_PROVIDER_ENV; do
+            [[ -n "${!s}" ]] || { echo "::error::Secret mancante: $s"; exit 1; }
+          done
+
+      - uses: ./.github/actions/pulumi-setup
+        with:
+          stack: ${{ inputs.stack }}
+
+      - name: Prepare SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
+
+      - name: Pulumi config
+        working-directory: infra
+        env:
+          LOCATION: ${{ inputs.location }}
+          ZONE: ${{ inputs.zone }}
+          FLAVOR: ${{ inputs.flavor }}
+          IMAGE: ${{ inputs.image }}
+          DISK: ${{ inputs.disk_size_gb }}
+          CIDR: ${{ inputs.ssh_allowed_cidr }}
+        run: |
+          set -euo pipefail
+          pulumi config set location "$LOCATION"
+          pulumi config set zone "$ZONE"
+          pulumi config set flavor "$FLAVOR"
+          pulumi config set image "$IMAGE"
+          pulumi config set diskSizeGb "$DISK"
+          pulumi config set sshAllowedCidr "$CIDR"
+          pulumi config set sshPublicKey "$(cat ~/.ssh/deploy_key.pub)"
+
+      - name: Pulumi up
+        working-directory: infra
+        run: pulumi up --yes --skip-preview
+
+      - name: Read outputs
+        id: out
+        working-directory: infra
+        run: echo "ip=$(pulumi stack output publicIp)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSH
+        env:
+          IP: ${{ steps.out.outputs.ip }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            keys=$(ssh-keyscan -T 5 -H "$IP" 2>/dev/null || true)
+            if [[ -n "$keys" ]]; then
+              echo "$keys" >> ~/.ssh/known_hosts
+              echo "SSH raggiungibile su $IP"; exit 0
+            fi
+            echo "Attendo SSH ($i/60)..."; sleep 10
+          done
+          echo "::error::SSH non raggiungibile su $IP"; exit 1
+
+      - name: Install Ansible
+        run: |
+          python -m pip install --quiet "ansible-core>=2.17,<2.19"
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Build Ansible variables
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          ACME_EMAIL: ${{ inputs.acme_email }}
+          DNS_PROVIDER: ${{ inputs.dns_provider }}
+          DNS_ENV: ${{ secrets.DNS_PROVIDER_ENV }}
+          ACME_STAGING: ${{ inputs.acme_staging }}
+          USER1: ${{ inputs.user1_name }}
+          KEY1: ${{ inputs.user1_ssh_key }}
+          USER2: ${{ inputs.user2_name }}
+          KEY2: ${{ inputs.user2_ssh_key }}
+        run: |
+          set -euo pipefail
+          umask 077
+          jq -n \
+            --arg domain "$DOMAIN" --arg email "$ACME_EMAIL" \
+            --arg dns "$DNS_PROVIDER" --arg dnsenv "$DNS_ENV" \
+            --argjson staging "$ACME_STAGING" \
+            --arg u1 "$USER1" --arg k1 "$KEY1" --arg u2 "$USER2" --arg k2 "$KEY2" \
+            '{domain:$domain, acme_email:$email, dns_provider:$dns, dns_env:$dnsenv,
+              acme_staging:$staging,
+              admin_users:[{name:$u1, ssh_public_key:$k1},{name:$u2, ssh_public_key:$k2}]}' \
+            > "$RUNNER_TEMP/extra-vars.json"
+
+      - name: Run Ansible playbook
+        working-directory: ansible
+        env:
+          IP: ${{ steps.out.outputs.ip }}
+          BOOTSTRAP_USER: ${{ inputs.bootstrap_user }}
+          ANSIBLE_FORCE_COLOR: "1"
+        run: |
+          ansible-playbook site.yml \
+            -i "$IP," -u "$BOOTSTRAP_USER" --private-key ~/.ssh/deploy_key \
+            -e "@$RUNNER_TEMP/extra-vars.json"
+
+      - name: Summary
+        if: success()
+        env:
+          IP: ${{ steps.out.outputs.ip }}
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          {
+            echo "## VPS pronto"
+            echo "- IP pubblico: \`$IP\`"
+            echo "- Crea i record DNS: \`$DOMAIN\` e \`*.$DOMAIN\` → \`$IP\`"
+          } >> "$GITHUB_STEP_SUMMARY"
